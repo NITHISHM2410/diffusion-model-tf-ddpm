@@ -117,9 +117,9 @@ class UpBlock(tf.keras.layers.Layer):
 
 
 class UNet(tf.keras.Model):
-    def __init__(self, time_steps=1000, input_size=64, time_dim=256):
+    def __init__(self, time_steps=1000, num_classes=5, input_size=64):
         super(UNet, self).__init__()
-        self.time_dim = time_dim
+        self.num_classes = num_classes
         self.time_steps = time_steps
         self.input_size = input_size
         self.start = ResBlock(self.input_size, 3, 64)
@@ -148,7 +148,11 @@ class UNet(tf.keras.Model):
 
         self.end = tf.keras.layers.SeparableConv2D(3, kernel_size=(1, 1))
 
-        self.time_encoding = PositionalEmbedding(self.time_dim)
+        self.class_embedding = tf.keras.layers.Embedding(self.num_classes + 1, 256)
+        self.add = tf.keras.layers.Add()
+        self.reshape = tf.keras.layers.Reshape(target_shape=())
+
+        self.time_encoding = PositionalEmbedding(256)
         self.forward_noiser = ForwardDiffusion(self.time_steps)
 
         self.alphas = self.forward_noiser.alphas
@@ -156,9 +160,15 @@ class UNet(tf.keras.Model):
         self.alpha_hats = self.forward_noiser.alpha_hat
 
     def call(self, inputs):
-        x, t = inputs
+        x, t, label = inputs
 
         t = self.time_encoding(t)
+
+        label = self.reshape(label)
+        label = self.class_embedding(label)
+
+        t = self.add([label, t])
+
         x1 = self.start(x)
 
         x2 = self.down1([x1, t])
@@ -185,15 +195,3 @@ class UNet(tf.keras.Model):
 
         out = self.end(x)
         return out
-
-
-
-
-
-
-
-
-
-
-
-

@@ -1,4 +1,4 @@
-# Exploring Landscape Image Generation Through Diffusion Model
+# Diffusion Model -- TensorFlow & Keras
 Diffusion models are a fascinating use of deep learning for simulating the gradual evolution of data over time. 
 The concept behind generation using diffusion model is to iteratively transform a data point from a noise to a target distribution which is the original data distribution. This transformation is performed through a series of discrete steps. The training stage involves forward diffusion and backward diffusion.  
 <br>
@@ -16,9 +16,8 @@ i) https://www.kaggle.com/datasets/utkarshsaxenadn/landscape-recognition-image-d
 **Results**  
 
 <p float="left">
-  <img src="results/results10.png" width="300" ">
-  <img src="results/results6.png" width="300" > 
-  <img src="results/results11.png" width="300" >
+  <img src="results/result5.png" width="300" ">
+  <img src="results/result1.png" width="300" > 
 </p>
 
   
