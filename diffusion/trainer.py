@@ -141,7 +141,7 @@ class Trainer:
         if use_main:
             dir = "results/normal_epoch_{0}.jpeg".format(epoch)
         else:
-            dir = "/kaggle/working/results/ema_epoch_{0}.jpeg".format(epoch)
+            dir = "results/ema_epoch_{0}.jpeg".format(epoch)
 
         fig.savefig(dir, pad_inches=0.03, bbox_inches='tight')
         plt.close(fig)
@@ -189,11 +189,11 @@ class Trainer:
 
             if self.val_loss_tracker.result() < self.best_loss:
                 self.best_loss = self.val_loss_tracker.result()
-                self.ema_model.save_weights("/kaggle/working/best_ema_weights/weights")
+                self.ema_model.save_weights("best_ema_weights/weights")
                 print("Best Weights saved...")
 
-            self.model.save_weights("/kaggle/working/all_weights/main_model_weights/weights")
-            self.ema_model.save_weights("/kaggle/working/all_weights/ema_model_weights/weights")
+            self.model.save_weights("all_weights/main_model_weights/weights")
+            self.ema_model.save_weights("all_weights/ema_model_weights/weights")
 
     # eval function using main_model or ema_model
     def evaluate(self, val_data, use_main=False):

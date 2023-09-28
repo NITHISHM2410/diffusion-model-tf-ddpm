@@ -51,4 +51,4 @@ def generate(no_of, class_no):
     images = tf.clip_by_value(images, 0, 1)
     return images
 
-# generated_images = generated()
+# generated_images = generate()
