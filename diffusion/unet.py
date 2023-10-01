@@ -153,35 +153,33 @@ class UNet(tf.keras.Model):
         self.num_classes = num_classes
         self.time_steps = time_steps
         self.input_size = input_size
-        self.start = ResBlock(self.input_size, 3, 64)
+        self.start = ResBlock(self.input_size//1, 3, 64)
 
-        self.down1 = DownBlock(64, 128, 64)
-        self.down_sa_1 = AttentionBlock(128, 32)
+        self.down1 = DownBlock(64, 128, self.input_size//1, 256)
+        self.down_sa_1 = AttentionBlock(128, self.input_size//2)
 
-        self.down2 = DownBlock(128, 256, 32)
-        self.down_sa_2 = AttentionBlock(256, 16)
+        self.down2 = DownBlock(128, 256, self.input_size//2, 256)
+        self.down_sa_2 = AttentionBlock(256, self.input_size//4)
 
-        self.down3 = DownBlock(256, 256, 16)
-        self.down_sa_3 = AttentionBlock(256, 8)
+        self.down3 = DownBlock(256, 256, self.input_size//4, 256)
+        self.down_sa_3 = AttentionBlock(256, self.input_size//8)
 
-        self.bt1 = ResBlock(8, 256, 512)
-        self.bt2 = ResBlock(8, 512, 512)
-        self.bt3 = ResBlock(8, 512, 256)
+        self.bt1 = ResBlock(self.input_size//8, 256, 512)
+        self.bt2 = ResBlock(self.input_size//8, 512, 512)
+        self.bt3 = ResBlock(self.input_size//8, 512, 256)
 
-        self.up1 = UpBlock(512, 128, 8)
-        self.up_sa_4 = AttentionBlock(128, 16)
+        self.up1 = UpBlock(512, 128, self.input_size//8, 256)
+        self.up_sa_4 = AttentionBlock(128, self.input_size//4)
 
-        self.up2 = UpBlock(256, 64, 16)
-        self.up_sa_5 = AttentionBlock(64, 32)
+        self.up2 = UpBlock(256, 64, self.input_size//4, 256)
+        self.up_sa_5 = AttentionBlock(64, self.input_size//2)
 
-        self.up3 = UpBlock(128, 64, 32)
-        self.up_sa_6 = AttentionBlock(64, 64)
+        self.up3 = UpBlock(128, 64, self.input_size//2, 256)
+        self.up_sa_6 = AttentionBlock(64, self.input_size//1)
 
         self.end = tf.keras.layers.SeparableConv2D(3, kernel_size=(1, 1))
 
         self.class_embedding = tf.keras.layers.Embedding(self.num_classes + 1, 256)
-        self.add = tf.keras.layers.Add()
-        self.reshape = tf.keras.layers.Reshape(target_shape=())
 
         self.time_encoding = PositionalEmbedding(256)
         self.forward_noiser = ForwardDiffusion(self.time_steps)
@@ -195,10 +193,10 @@ class UNet(tf.keras.Model):
 
         t = self.time_encoding(t)
 
-        label = self.reshape(label)
+        label = tf.keras.layers.Reshape(target_shape=())(label)
         label = self.class_embedding(label)
 
-        t = self.add([label, t])
+        t = tf.keras.layers.Add()([label, t])
 
         x1 = self.start(x)
 
@@ -226,6 +224,3 @@ class UNet(tf.keras.Model):
 
         out = self.end(x)
         return out
-
-
-
