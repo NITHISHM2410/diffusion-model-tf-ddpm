@@ -1,5 +1,5 @@
 import tensorflow as tf
-from unet import UNet
+from diffusion import UNet
 
 model = UNet(time_steps=1000, input_size=64, num_classes=5)
 model.load_weights("directory")

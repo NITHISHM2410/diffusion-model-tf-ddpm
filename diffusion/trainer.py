@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
-from unet import UNet
+from diffusion import UNet
 
 
 class Trainer:

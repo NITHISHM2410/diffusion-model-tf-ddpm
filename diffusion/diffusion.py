@@ -1,4 +1,30 @@
-from forward_diffusion import *
+import tensorflow as tf
+
+
+class ForwardDiffusion:
+    def __init__(self, time_steps):
+        self.time_steps = time_steps
+        self.beta_start = 1e-4
+        self.beta_end = 0.02
+
+        self.betas = tf.linspace(self.beta_start, self.beta_end, int(self.time_steps))
+        self.alphas = 1. - self.betas
+        self.alpha_hat = tf.math.cumprod(self.alphas)
+
+    def __call__(self, inputs):
+        x, t = inputs
+        noise = tf.random.normal(shape=tf.shape(x))
+
+        sqrt_alpha_hat = tf.math.sqrt(
+            tf.gather(self.alpha_hat, t)
+        )[:, None, None, None]
+
+        sqrt_one_minus_alpha_hat = tf.math.sqrt(
+            1. - tf.gather(self.alpha_hat, t)
+        )[:, None, None, None]
+
+        noised_image = sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * noise
+        return noised_image, noise
 
 
 class PositionalEmbedding(tf.keras.layers.Layer):
