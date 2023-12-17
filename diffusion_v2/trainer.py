@@ -8,10 +8,36 @@ from tqdm import tqdm
 
 class Trainer:
     def __init__(self, c_in=3, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,), heads=-1, cph=32,
-                 num_classes=1, epochs=100, lr=2e-5, time_steps=1000, image_size=256, ema_iterations_start=5, no_of=64,
+                 num_classes=1, epochs=100, lr=2e-5, time_steps=1000, image_size=256, ema_iterations_start=5000,
+                 no_of=64,
                  freq=5, sample_ema_only=True, beta_start=1e-4, beta_end=0.02,
                  train_logdir="logs/train_logs/", val_logdir="logs/val_logs/"):
 
+        """
+
+
+        :param c_in: no of input channels
+        :param c_out: no of output channels
+        :param ch_list: list of channels to use across Up and Down sampling
+        :param attn_res: list of resolutions to use Attention Mechanism
+        :param heads: no of attention heads (if set to -1, then heads are chosen as <current channels/cph>)
+        :param cph: no of channels per head (used if heads is set to -1)
+        :param num_classes: no of classes for Conditional training ( choose 1 for Uncond training)
+        :param epochs: no of epochs
+        :param lr: constant learning rate to train with
+        :param time_steps: no of diffusion time steps
+        :param image_size: input image size
+        :param ema_iterations_start: no of iterations to start EMA
+        :param no_of: no of images to generate at 'freq' frequency
+        :param freq: frequency of generating samples
+        :param sample_ema_only: Sample only from EMA model
+        :param beta_start: Starting Beta for ForwardDiffusion
+        :param beta_end: Ending Beta for ForwardDiffusion
+        :param train_logdir: Directory to log train results
+        :param val_logdir: Directory to log validation results
+
+
+        """
         self.image_size = image_size
         self.time_steps = time_steps
         self.epochs = epochs
@@ -168,7 +194,7 @@ class Trainer:
         # Conditional guidance
         if self.num_classes > 1:
             cls = tf.random.uniform(
-                (int(no_of**0.5),), minval=1, maxval=self.num_classes + 1, dtype=tf.int32
+                (int(no_of ** 0.5),), minval=1, maxval=self.num_classes + 1, dtype=tf.int32
             )
             cls = tf.repeat(cls, len(cls), axis=0)
         else:
