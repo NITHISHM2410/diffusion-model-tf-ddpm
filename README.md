@@ -26,7 +26,7 @@ For generating new images, we simply perform reverse diffusion iteratively. To d
 
 ## Training & Generation demo
 
-- [DDPM](https://colab.research.google.com/drive/1Kd9sfJgt28KW6LBe1aMQYo5gDDFoN02r?usp=sharing)
+- [DDPM](https://www.kaggle.com/code/nithishm2410/diffusion-usage-v2)
 
 
 
