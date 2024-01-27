@@ -131,6 +131,10 @@ class Trainer:
                 output = self.model([noised_image, t, cls], training=True)
                 loss = self.compute_loss(noise, output)
 
+            # BackProp & Update
+            grads = tape.gradient(loss, self.model.trainable_weights)
+            self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
+
             # EMA
             if self.optimizer.iterations >= self.ema_iterations_start:
                 for main_weights, ema_weights in zip(self.model.trainable_weights,
@@ -143,9 +147,6 @@ class Trainer:
                                                      self.ema_model.trainable_weights):
                     ema_weights.assign(main_weights)
 
-            # BackProp & Update
-            grads = tape.gradient(loss, self.model.trainable_weights)
-            self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
             return loss
 
         losses = self.device.run(unit_step, args=(next(iterator),))
