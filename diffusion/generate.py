@@ -38,12 +38,13 @@ class GenerateImages:
         return images
 
 
-def read_image(image_locations, size):
+def read_images(image_locations, size, return_ds=False):
     """
     Read images from locations and applies basic transformations
 
     :param image_locations: list of image locations
     :param size: required image size
+    :param return_ds: boolean value, whether to return images as tf.data.Dataset
     """
     image_locations = tf.data.Dataset.from_tensor_slices(image_locations)
 
@@ -54,6 +55,10 @@ def read_image(image_locations, size):
         return img
 
     images = image_locations.map(transform, num_parallel_calls=tf.data.AUTOTUNE)
+    if return_ds:
+        return images
+
+    images = images.batch(len(image_locations), drop_remainder=True)
     return next(iter(images))
 
 
