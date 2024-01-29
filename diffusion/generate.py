@@ -17,8 +17,16 @@ class GenerateImages:
         return output
 
     def sample(self, no_of, cls_list):
+        """
+
+        Generates images.
+        :param no_of: Number of images to generate. (64 - TPU / 16 - GPU)
+        :param cls_list: List of Integer labels. Length of the list should be 'no_of'//num_devices so that each
+        device generates images from a specific class. Label values is based on the dataset trained on.
+        :return: Generated images.
+        """
         # Sample Gaussian noise
-        images = tf.random.normal((no_of, self.model.img_res, self.model.img_res, 3))
+        images = tf.random.normal((no_of, self.model.img_res, self.model.img_res, self.model.c_in))
 
         images = self.device.experimental_distribute_dataset(
             tf.data.Dataset.from_tensor_slices(images).batch(no_of, drop_remainder=True)

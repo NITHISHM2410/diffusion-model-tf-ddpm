@@ -3,6 +3,14 @@ import tensorflow as tf
 
 class ForwardDiffusion:
     def __init__(self, time_steps, beta_start, beta_end):
+        """
+        Forward diffusion phase - q(xt | xt-1).
+
+        :param time_steps:  diffusion time steps count.
+        :param beta_start: variance schedule start.
+        :param beta_end: variance schedule end.
+        """
+
         self.time_steps = time_steps
         self.beta_start = beta_start
         self.beta_end = beta_end
@@ -32,6 +40,11 @@ class ForwardDiffusion:
 
 class PositionalEmbedding(tf.keras.layers.Layer):
     def __init__(self, embed):
+        """
+         Positional embedding layer for embedding time.
+
+        :param embed: embedding dim.
+        """
         super(PositionalEmbedding, self).__init__()
         self.embed = embed
 
@@ -56,6 +69,13 @@ class PositionalEmbedding(tf.keras.layers.Layer):
 
 class UpSample(tf.keras.layers.Layer):
     def __init__(self, c_out, hw, with_conv):
+        """
+        Up sampling layer.
+
+        :param c_out: expected output channels for this layer's outputs.
+        :param hw: height, width of input to this layer.
+        :param with_conv: whether to use conv layer along with up sampling.
+        """
         super(UpSample, self).__init__()
         self.hw = hw
         self.with_conv = with_conv
@@ -76,6 +96,13 @@ class UpSample(tf.keras.layers.Layer):
 
 class DownSample(tf.keras.layers.Layer):
     def __init__(self, c_out, hw, with_conv):
+        """
+        Down sampling layer
+
+        :param c_out: expected output channels for this layer's outputs.
+        :param hw: height, width of input to this layer.
+        :param with_conv: whether to use conv layer for down sampling, 'False' equals pooling.
+        """
         super(DownSample, self).__init__()
         self.hw = hw
         self.with_conv = with_conv
@@ -100,6 +127,16 @@ class DownSample(tf.keras.layers.Layer):
 
 class ResBlock(tf.keras.layers.Layer):
     def __init__(self, c_in, c_out, dropout, t_emb, mask=False, hw=None):
+        """
+        Resnet block which implements basic convolutions and embeds time & optionally mask embedding to the input.
+
+        :param c_in: input channels of this layer's inputs.
+        :param c_out: expected output channels for this layer's outputs.
+        :param dropout: dropout value.
+        :param t_emb: embedding dimension of time embedding.
+        :param mask: boolean value, whether layer must receive mask of then input (for mask filling task).
+        :param hw: height, width of input to this layer.
+        """
         super(ResBlock, self).__init__()
         self.c_in = c_in
         self.c_out = c_out
@@ -173,6 +210,12 @@ class ResBlock(tf.keras.layers.Layer):
 
 class AttentionBlock(tf.keras.layers.Layer):
     def __init__(self, c, hw):
+        """
+        A single head attention block.
+
+        :param c: input channels of this layer's inputs.
+        :param hw: height, width of input to this layer.
+        """
         super(AttentionBlock, self).__init__()
         self.c = c
         self.hw = hw
@@ -195,6 +238,12 @@ class AttentionBlock(tf.keras.layers.Layer):
 
 class AttentionUnitLayer(tf.keras.layers.Layer):
     def __init__(self, c, hw):
+        """
+         unit head work of multi head attention.
+
+        :param c: input channels of this layer's inputs.
+        :param hw: height, width of input to this layer.
+        """
         super(AttentionUnitLayer, self).__init__()
         self.c = c
         self.hw = hw
@@ -211,6 +260,13 @@ class AttentionUnitLayer(tf.keras.layers.Layer):
 
 class MHAAttentionBlock(tf.keras.layers.Layer):
     def __init__(self, c, heads, hw):
+        """
+         A Multi head attention layer.
+
+        :param c: input channels of this layer's inputs.
+        :param heads: number of attention heads.
+        :param hw: height, width of input to this layer.
+        """
         super(MHAAttentionBlock, self).__init__()
         self.c = c
         self.hw = hw
@@ -235,6 +291,21 @@ class MHAAttentionBlock(tf.keras.layers.Layer):
 class Encoder(tf.keras.Model):
     def __init__(self, c_in=3, c_out=512, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,),
                  heads=-1, cph=32, mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=256, dropout=0):
+        """
+        An Image encoder.
+
+        :param c_in: input channels of this model's inputs.
+        :param c_out: output channels of this model's outputs.
+        :param ch_list: list of channels to be used across down & up sampling.
+        :param attn_res: list of resolution for which attention mechanism is to be implemented.
+        :param heads: number of attention heads.
+        :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
+        :param mid_attn: boolean value whether to use attention in bottleneck layer.
+        :param resamp_with_conv: boolean value whether to use conv layer during up and down sampling.
+        :param num_res_blocks: number of resnet blocks per channel in 'ch_list'.
+        :param img_res: input image resolution.
+        :param dropout: dropout value to be used in resnet blocks.
+        """
         super(Encoder, self).__init__()
         self.c_in = c_in
         self.c_out = c_out
@@ -326,6 +397,21 @@ class Encoder(tf.keras.Model):
 class Decoder(tf.keras.Model):
     def __init__(self, c_in=512, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,),
                  heads=-1, cph=32, mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=256, dropout=0):
+        """
+        An Image Decoder.
+
+        :param c_in: input channels of this model's inputs.
+        :param c_out: output channels of this model's outputs.
+        :param ch_list: list of channels to be used across down & up sampling.
+        :param attn_res: list of resolution for which attention mechanism is to be implemented.
+        :param heads: number of attention heads.
+        :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
+        :param mid_attn: boolean value whether to use attention in bottleneck layer.
+        :param resamp_with_conv: boolean value whether to use conv layer during up and down sampling.
+        :param num_res_blocks: number of resnet blocks per channel in 'ch_list'.
+        :param img_res: input image resolution.
+        :param dropout: dropout value to be used in resnet blocks.
+        """
         super(Decoder, self).__init__()
         self.c_in = c_in
         self.c_out = c_out
@@ -419,6 +505,29 @@ class UNet(tf.keras.Model):
     def __init__(self, c_in=3, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,), heads=-1, cph=32,
                  mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=256, dropout=0, time_steps=1000,
                  beta_start=1e-4, beta_end=0.02, num_classes=1, cfg_weight=3, mask=False, inherited=False):
+        """
+        An UNet model down samples and up samples and allows skip connections across both the up and down sampling.
+        Also applies Forward diffusion, Positional embedding and class conditioning.
+
+        :param c_in: input channels of this model's inputs.
+        :param c_out: output channels of this model's outputs.
+        :param ch_list: list of channels to be used across down & up sampling.
+        :param attn_res: list of resolution for which attention mechanism is to be implemented.
+        :param heads: number of attention heads.
+        :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
+        :param mid_attn: boolean value whether to use attention in bottleneck layer.
+        :param resamp_with_conv: boolean value whether to use conv layer during up and down sampling.
+        :param num_res_blocks: number of resnet blocks per channel in 'ch_list'.
+        :param img_res: input image resolution.
+        :param dropout: dropout value to be used in resnet blocks.
+        :param time_steps: number of diffusion time steps.
+        :param beta_start: noise variance schedule start value.
+        :param beta_end: noise variance schedule end value.
+        :param num_classes: number of classes for conditional generation.
+        :param cfg_weight: interpolation weight for conditional generation.
+        :param mask: boolean value, whether to mask input for mask filling task.
+        :param inherited: boolean value, whether the instance is inheriting the class 'UNet'.
+        """
         super(UNet, self).__init__()
         self.c_in = c_in
         self.img_res = img_res
@@ -565,6 +674,13 @@ class UNet(tf.keras.Model):
 
     @tf.function
     def diffuse_step(self, images, time, cls):
+        """
+        Single reverse diffusion step - p(xt-1 | xt).
+
+        :param images: input images.
+        :param time: current diffusion time step.
+        :param cls: label value for class conditional generation.
+        """
         batch = tf.shape(images)[0]
         time = tf.repeat(time, repeats=batch, axis=0)
 
@@ -601,6 +717,27 @@ class UNetGenFill(UNet):
     def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), attn_res=(16,), heads=1, cph=32,
                  mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=64, dropout=0, time_steps=1000,
                  beta_start=1e-4, beta_end=0.02, mask_percent_range=(0.0, 0.20)):
+        """
+
+        A Mask filling model down samples and up samples & allows skip connections across both the up and down sampling.
+        Also applies Forward diffusion, Positional embedding and class conditioning.
+
+        :param c_in: input channels of this model's inputs.
+        :param c_out: output channels of this model's outputs.
+        :param ch_list: list of channels to be used across down & up sampling.
+        :param attn_res: list of resolution for which attention mechanism is to be implemented.
+        :param heads: number of attention heads.
+        :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
+        :param mid_attn: boolean value whether to use attention in bottleneck layer.
+        :param resamp_with_conv: boolean value whether to use conv layer during up and down sampling.
+        :param num_res_blocks: number of resnet blocks per channel in 'ch_list'.
+        :param img_res: input image resolution.
+        :param dropout: dropout value to be used in resnet blocks.
+        :param time_steps: number of diffusion time steps.
+        :param beta_start: noise variance schedule start value.
+        :param beta_end: noise variance schedule end value.
+        :param mask_percent_range: percentage of masking to be done from all sides of the image as a range (min, max).
+        """
         super().__init__(c_in=c_in, c_out=c_out, ch_list=ch_list, attn_res=attn_res, heads=heads, cph=cph,
                          mid_attn=mid_attn, resamp_with_conv=resamp_with_conv, num_res_blocks=num_res_blocks,
                          img_res=img_res, dropout=dropout, time_steps=time_steps, beta_start=beta_start,
@@ -613,7 +750,9 @@ class UNetGenFill(UNet):
             self.max_mask_percent = mask_percent_range[1]
 
         self.img_res = img_res
-        self.img_ind = tf.repeat(tf.expand_dims(tf.range(64), 0), repeats=64, axis=0)[None, :, :, None]
+        self.img_ind = tf.repeat(
+            tf.expand_dims(tf.range(self.img_res), 0), repeats=self.img_res, axis=0
+        )[None, :, :, None]
 
         self.mask_embedding = tf.keras.Sequential([
             tf.keras.layers.Conv2D(ch_list[0]*4, kernel_size=1, activation='linear'),
@@ -678,6 +817,13 @@ class UNetGenFill(UNet):
 
     @tf.function
     def diffuse_step(self, images, time, masked_images):
+        """
+        Single reverse diffusion step - P(xt-1 | xt).
+
+        :param images: input images.
+        :param time: current diffusion time step.
+        :param masked_images: masked images.
+        """
         batch = tf.shape(images)[0]
         time = tf.repeat(time, repeats=batch, axis=0)
 

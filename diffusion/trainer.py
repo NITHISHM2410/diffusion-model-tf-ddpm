@@ -14,26 +14,26 @@ class Trainer:
 
         """
 
-        :param c_in: no of input channels
-        :param c_out: no of output channels
-        :param ch_list: list of channels to use across Up and Down sampling
-        :param attn_res: list of resolutions to use Attention Mechanism
-        :param heads: no of attention heads (if set to -1, then heads are chosen as <current channels/cph>)
-        :param cph: no of channels per head (used if heads is set to -1)
-        :param num_classes: no of classes for Conditional training ( choose 1 for Unconditional training)
-        :param lr: constant learning rate to train with
-        :param time_steps: no of diffusion time steps
-        :param image_size: input image size
-        :param ema_iterations_start: no of iterations to start EMA
-        :param no_of: no of images to generate at 'freq' frequency
-        :param freq: frequency of generating samples
-        :param sample_ema_only: Sample only from EMA model
-        :param beta_start: Starting Beta for ForwardDiffusion
-        :param beta_end: Ending Beta for ForwardDiffusion
-        :param device: A TPU strategy instance
-        :param is_logging: Boolean value, whether to log results
-        :param train_logdir: Directory to log train results
-        :param val_logdir: Directory to log validation results
+        :param c_in: no of input channels.
+        :param c_out: no of output channels.
+        :param ch_list: list of channels to use across Up and Down sampling.
+        :param attn_res: list of resolutions to use Attention Mechanism.
+        :param heads: no of attention heads (if set to -1, then heads are chosen as <current channels/cph>).
+        :param cph: no of channels per head (used if heads is set to -1).
+        :param num_classes: no of classes for Conditional training ( choose 1 for Unconditional training).
+        :param lr: constant learning rate to train with.
+        :param time_steps: no of diffusion time steps.
+        :param image_size: input image size.
+        :param ema_iterations_start: no of iterations to start EMA.
+        :param no_of: no of images to generate at 'freq' frequency.
+        :param freq: frequency of generating samples.
+        :param sample_ema_only: Sample only from EMA model.
+        :param beta_start: Starting Beta for ForwardDiffusion.
+        :param beta_end: Ending Beta for ForwardDiffusion.
+        :param device: A tf.distribute.Strategy instance.
+        :param is_logging: Boolean value, whether to log results.
+        :param train_logdir: Directory to log train results.
+        :param val_logdir: Directory to log validation results.
 
 
         """
@@ -102,10 +102,20 @@ class Trainer:
         self.val_counter = 0
 
     def sample_time_step(self, size):
+        """
+        Samples a number from range(time_steps).
+
+        :param size: shape of sampled array.
+        """
         return tf.experimental.numpy.random.randint(0, self.time_steps, size=(size,))
 
     @tf.function
     def train_step(self, iterator):
+        """
+        A single training step.
+
+        :param iterator: train tf.data.Dataset iterator.
+        """
         def unit_step(data):
             image = data['image']
             cls = data['context']
@@ -155,6 +165,11 @@ class Trainer:
     # eval step using ema_model
     @tf.function
     def test_step(self, iterator):
+        """
+        A Single validation step using EMA model.
+
+        :param iterator: val tf.data.Dataset iterator.
+        """
         def unit_step(data):
             image = data['image']
             cls = data['context']
@@ -178,6 +193,11 @@ class Trainer:
     # eval step using main_model
     @tf.function
     def test_step_main(self, iterator):
+        """
+        A Single validation step using main model.
+
+        :param iterator: val tf.data.Dataset iterator.
+        """
         def unit_step(data):
             image = data['image']
             cls = data['context']
@@ -200,6 +220,14 @@ class Trainer:
 
     @tf.function
     def reverse_diffusion(self, images, time, cls, use_main):
+        """
+        Calls the reverse diffusion step.
+
+        :param images: input images after diffusion step t-1.
+        :param time: current diffusion time step.
+        :param cls: label value for class conditional generation.
+        :param use_main: boolean value, whether to use EMA model for generating.
+        """
         if use_main:
             images = self.device.run(self.model.diffuse_step, args=(images, time, cls))
         else:
@@ -207,8 +235,15 @@ class Trainer:
         return images
 
     def sample(self, epoch, no_of, use_main=False):
+        """
+        Generates plots of generated images.
+
+        :param epoch: epoch number to name the output file (Any string or int).
+        :param no_of: number of images to generate.
+        :param use_main: boolean value, whether to use main model for generating.
+        """
         # Sample Gaussian noise
-        images = tf.random.normal((no_of, self.image_size, self.image_size, 3))
+        images = tf.random.normal((no_of, self.image_size, self.image_size, self.c_in))
         images = self.device.experimental_distribute_dataset(
             tf.data.Dataset.from_tensor_slices(images).batch(no_of, drop_remainder=True)
         )
@@ -255,6 +290,15 @@ class Trainer:
         plt.close(fig)
 
     def train(self, epochs, train_ds, val_ds, train_steps, val_steps):
+        """
+        Training loop.
+
+        :param epochs: number of epochs.
+        :param train_ds: train tf.data.Dataset.
+        :param val_ds: val tf.data.Dataset.
+        :param train_steps: number of iterations per epoch for training data.
+        :param val_steps: number of iterations per epoch for validation data.
+        """
         for epoch in range(1, epochs + 1):
             # Make training and validation data iterable
             train_data = iter(train_ds)
@@ -313,6 +357,14 @@ class Trainer:
 
     # eval function using main_model or ema_model
     def evaluate(self, val_data, val_steps, log_data=False, use_main=False):
+        """
+        Evaluation loop.
+
+        :param val_data: Validation data iterator.
+        :param val_steps: number of iterations for validation data.
+        :param log_data: boolean value, whether to log validation results.
+        :param use_main: boolean value, whether to use main model for generating.
+        """
         self.val_loss_tracker.reset_states()
 
         for _ in range(val_steps):
