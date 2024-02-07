@@ -8,9 +8,9 @@ import gc
 
 class Trainer:
     def __init__(self, c_in=3, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,), heads=-1, cph=32,
-                 num_classes=1, lr=2e-5, time_steps=1000, image_size=256, ema_iterations_start=5000, no_of=64,
-                 freq=5, sample_ema_only=True, beta_start=1e-4, beta_end=0.02, is_logging=False,
-                 device=None, train_logdir="logs/train_logs/", val_logdir="logs/val_logs/"):
+                 norm_g=32, num_classes=1, lr=2e-5, time_steps=1000, image_size=256, ema_iterations_start=5000,
+                 loss_type='l2', no_of=64, freq=5, sample_ema_only=True, beta_start=1e-4, beta_end=0.02,
+                 is_logging=False, device=None, train_logdir="logs/train_logs/", val_logdir="logs/val_logs/"):
 
         """
 
@@ -20,11 +20,13 @@ class Trainer:
         :param attn_res: list of resolutions to use Attention Mechanism.
         :param heads: no of attention heads (if set to -1, then heads are chosen as <current channels/cph>).
         :param cph: no of channels per head (used if heads is set to -1).
+        :param norm_g: number of groups for group norm.
         :param num_classes: no of classes for Conditional training ( choose 1 for Unconditional training).
         :param lr: constant learning rate to train with.
         :param time_steps: no of diffusion time steps.
         :param image_size: input image size.
         :param ema_iterations_start: no of iterations to start EMA.
+        :param loss_type: 'l1' or 'l2' loss.
         :param no_of: no of images to generate at 'freq' frequency.
         :param freq: frequency of generating samples.
         :param sample_ema_only: Sample only from EMA model.
@@ -47,11 +49,13 @@ class Trainer:
         self.sample_ema_only = sample_ema_only
         self.beta_start = beta_start
         self.beta_end = beta_end
+        self.loss_type = loss_type
 
         self.c_in = c_in
         self.c_out = c_out
         self.ch_list = ch_list
         self.attn_res = attn_res
+        self.norm_g = norm_g
         self.num_classes = num_classes
         self.heads = heads
         self.cph = cph
@@ -62,29 +66,31 @@ class Trainer:
 
         with self.device.scope():
             self.model = UNet(c_in=self.c_in, c_out=self.c_out, ch_list=self.ch_list, attn_res=self.attn_res,
-                              heads=self.heads, cph=self.cph, num_classes=self.num_classes, cfg_weight=3, mid_attn=True,
-                              resamp_with_conv=True, num_res_blocks=2, img_res=self.image_size, dropout=0,
+                              norm_g=self.norm_g, heads=self.heads, cph=self.cph, num_classes=self.num_classes,
+                              cfg_weight=3, mid_attn=True, resamp_with_conv=True, num_res_blocks=2,
+                              img_res=self.image_size, dropout=0,
                               time_steps=self.time_steps, beta_start=self.beta_start, beta_end=self.beta_end)
 
             self.ema_model = UNet(c_in=self.c_in, c_out=self.c_out, ch_list=self.ch_list, attn_res=self.attn_res,
-                                  heads=self.heads, cph=self.cph, num_classes=self.num_classes, cfg_weight=3,
-                                  mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=self.image_size,
-                                  dropout=0, time_steps=self.time_steps,
-                                  beta_start=self.beta_start, beta_end=self.beta_end)
+                                  norm_g=self.norm_g, heads=self.heads, cph=self.cph, num_classes=self.num_classes,
+                                  cfg_weight=3, mid_attn=True, resamp_with_conv=True, num_res_blocks=2,
+                                  img_res=self.image_size, dropout=0,
+                                  time_steps=self.time_steps, beta_start=self.beta_start, beta_end=self.beta_end)
 
-            mse = tf.keras.losses.MeanSquaredError(name="MSELoss",
-                                                   reduction=tf.keras.losses.Reduction.NONE
-                                                   )
-
-            def compute_loss(y_true, y_pred):
-                return tf.nn.compute_average_loss(
-                    tf.math.reduce_mean(
-                        mse(y_true, y_pred),
-                        axis=[1, 2]
-                    )
+            if loss_type == 'l2':
+                self.base_loss = tf.keras.losses.MeanSquaredError(
+                    name="MSELoss",
+                    reduction=tf.keras.losses.Reduction.NONE
                 )
+            elif loss_type == 'l1':
+                self.base_loss = tf.keras.losses.MeanAbsoluteError(
+                    name="MAELoss",
+                    reduction=tf.keras.losses.Reduction.NONE
+                )
+            else:
+                raise Exception("provide l1 or l2 loss_fn")
 
-            self.compute_loss = compute_loss
+            self.compute_loss = self.compute_loss
 
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
             self.ema_decay = tf.constant(0.99, dtype=tf.float32)
@@ -101,6 +107,20 @@ class Trainer:
         self.train_counter = 0
         self.val_counter = 0
 
+    def compute_loss(self, y_true, y_pred):
+        """
+
+        :param y_true: target data.
+        :param y_pred: predicted data.
+        :return:
+        """
+        return tf.nn.compute_average_loss(
+            tf.math.reduce_mean(
+                self.base_loss(y_true, y_pred),
+                axis=[1, 2]
+            )
+        )
+
     def sample_time_step(self, size):
         """
         Samples a number from range(time_steps).
@@ -116,6 +136,7 @@ class Trainer:
 
         :param iterator: train tf.data.Dataset iterator.
         """
+
         def unit_step(data):
             image = data['image']
             cls = data['context']
@@ -170,6 +191,7 @@ class Trainer:
 
         :param iterator: val tf.data.Dataset iterator.
         """
+
         def unit_step(data):
             image = data['image']
             cls = data['context']
@@ -198,6 +220,7 @@ class Trainer:
 
         :param iterator: val tf.data.Dataset iterator.
         """
+
         def unit_step(data):
             image = data['image']
             cls = data['context']

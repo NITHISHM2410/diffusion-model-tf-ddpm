@@ -126,7 +126,7 @@ class DownSample(tf.keras.layers.Layer):
 
 
 class ResBlock(tf.keras.layers.Layer):
-    def __init__(self, c_in, c_out, dropout, t_emb, mask=False, hw=None):
+    def __init__(self, c_in, c_out, dropout, t_emb, norm_g, mask=False, hw=None):
         """
         Resnet block which implements basic convolutions and embeds time & optionally mask embedding to the input.
 
@@ -134,6 +134,7 @@ class ResBlock(tf.keras.layers.Layer):
         :param c_out: expected output channels for this layer's outputs.
         :param dropout: dropout value.
         :param t_emb: embedding dimension of time embedding.
+        :param norm_g: number of groups for group norm.
         :param mask: boolean value, whether layer must receive mask of then input (for mask filling task).
         :param hw: height, width of input to this layer.
         """
@@ -143,7 +144,7 @@ class ResBlock(tf.keras.layers.Layer):
         self.t_emb = t_emb
         self.mask = mask
 
-        self.norm1 = tf.keras.layers.GroupNormalization()
+        self.norm1 = tf.keras.layers.GroupNormalization(norm_g)
         self.non_linear1 = tf.keras.layers.Activation("swish")
         self.conv1 = tf.keras.layers.SeparableConv2D(
             filters=self.c_out,
@@ -166,7 +167,7 @@ class ResBlock(tf.keras.layers.Layer):
                 tf.keras.layers.Dense(c_out),
             ])
 
-        self.norm2 = tf.keras.layers.GroupNormalization()
+        self.norm2 = tf.keras.layers.GroupNormalization(groups=norm_g)
         self.non_linear2 = tf.keras.layers.Activation("swish")
         self.dropout_layer = tf.keras.layers.Dropout(dropout)
         self.conv2 = tf.keras.layers.SeparableConv2D(
@@ -209,18 +210,20 @@ class ResBlock(tf.keras.layers.Layer):
 
 
 class AttentionBlock(tf.keras.layers.Layer):
-    def __init__(self, c, hw):
+    def __init__(self, c, hw, norm_g):
         """
         A single head attention block.
 
         :param c: input channels of this layer's inputs.
         :param hw: height, width of input to this layer.
+        :param norm_g: number of groups for group norm.
+
         """
         super(AttentionBlock, self).__init__()
         self.c = c
         self.hw = hw
         self.attn = tf.keras.layers.Attention(use_scale=True)
-        self.norm = tf.keras.layers.GroupNormalization()
+        self.norm = tf.keras.layers.GroupNormalization(groups=norm_g)
 
         self.qkv_proj = tf.keras.layers.Conv1D(kernel_size=1, filters=c * 3)
         self.final_proj = tf.keras.layers.Conv1D(kernel_size=1, filters=c)
@@ -237,18 +240,19 @@ class AttentionBlock(tf.keras.layers.Layer):
 
 
 class AttentionUnitLayer(tf.keras.layers.Layer):
-    def __init__(self, c, hw):
+    def __init__(self, c, hw, norm_g):
         """
          unit head work of multi head attention.
 
         :param c: input channels of this layer's inputs.
         :param hw: height, width of input to this layer.
+        :param norm_g: number of groups for group norm.
         """
         super(AttentionUnitLayer, self).__init__()
         self.c = c
         self.hw = hw
         self.attn = tf.keras.layers.Attention(use_scale=True)
-        self.norm = tf.keras.layers.GroupNormalization()
+        self.norm = tf.keras.layers.GroupNormalization(groups=norm_g)
         self.qkv_proj = tf.keras.layers.Conv1D(kernel_size=1, filters=c * 3)
 
     def call(self, x, **kwargs):
@@ -259,19 +263,20 @@ class AttentionUnitLayer(tf.keras.layers.Layer):
 
 
 class MHAAttentionBlock(tf.keras.layers.Layer):
-    def __init__(self, c, heads, hw):
+    def __init__(self, c, heads, hw, norm_g):
         """
          A Multi head attention layer.
 
         :param c: input channels of this layer's inputs.
         :param heads: number of attention heads.
         :param hw: height, width of input to this layer.
+        :param norm_g: number of groups for group norm.
         """
         super(MHAAttentionBlock, self).__init__()
         self.c = c
         self.hw = hw
         self.heads = heads
-        self.attn_heads_units = [AttentionUnitLayer(self.c // self.heads, self.hw) for _ in range(self.heads)]
+        self.attn_heads_units = [AttentionUnitLayer(self.c // self.heads, self.hw, norm_g) for _ in range(self.heads)]
         self.final_proj = tf.keras.layers.Conv1D(kernel_size=1, filters=self.c)
 
     def call(self, x, **kwargs):
@@ -289,7 +294,7 @@ class MHAAttentionBlock(tf.keras.layers.Layer):
 
 
 class Encoder(tf.keras.Model):
-    def __init__(self, c_in=3, c_out=512, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,),
+    def __init__(self, c_in=3, c_out=512, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,), norm_g=32,
                  heads=-1, cph=32, mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=256, dropout=0):
         """
         An Image encoder.
@@ -298,6 +303,7 @@ class Encoder(tf.keras.Model):
         :param c_out: output channels of this model's outputs.
         :param ch_list: list of channels to be used across down & up sampling.
         :param attn_res: list of resolution for which attention mechanism is to be implemented.
+        :param norm_g: number of groups for group norm.
         :param heads: number of attention heads.
         :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
         :param mid_attn: boolean value whether to use attention in bottleneck layer.
@@ -328,12 +334,12 @@ class Encoder(tf.keras.Model):
 
             for block in range(num_res_blocks):
                 ResAttnBlock = tf.keras.Sequential()
-                ResAttnBlock.add(ResBlock(c_in=block_in, c_out=block_out,
+                ResAttnBlock.add(ResBlock(c_in=block_in, c_out=block_out, norm_g=norm_g,
                                           t_emb=None, dropout=dropout, hw=cur_res, mask=False))
                 block_in = block_out
                 if cur_res in attn_res:
                     ResAttnBlock.add(MHAAttentionBlock(
-                        c=block_in,
+                        c=block_in, norm_g=norm_g,
                         heads=block_in // cph if heads == -1 else heads,
                         hw=cur_res
                     ))
@@ -349,21 +355,21 @@ class Encoder(tf.keras.Model):
         self.mid_layers = []
         self.mid_requires_time = []
 
-        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1],
+        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1], norm_g=norm_g,
                                         t_emb=None, dropout=dropout, hw=cur_res, mask=False))
         self.mid_requires_time.append(True)
 
         if mid_attn:
             self.mid_layers.append(
-                MHAAttentionBlock(ch_list[-1], ch_list[-1] // cph if heads == -1 else heads, cur_res))
+                MHAAttentionBlock(ch_list[-1], ch_list[-1] // cph if heads == -1 else heads, cur_res, norm_g=norm_g))
             self.mid_requires_time.append(False)
 
-        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1],
+        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1], norm_g=norm_g,
                                         t_emb=None, dropout=dropout, hw=cur_res, mask=False))
         self.mid_requires_time.append(True)
 
         # end
-        self.end_norm = tf.keras.layers.GroupNormalization()
+        self.end_norm = tf.keras.layers.GroupNormalization(groups=norm_g)
         self.end_non_linear = tf.keras.layers.Activation("swish")
         self.end_conv = tf.keras.layers.Conv2D(
             kernel_size=3, padding='same', filters=self.c_out
@@ -395,7 +401,7 @@ class Encoder(tf.keras.Model):
 
 
 class Decoder(tf.keras.Model):
-    def __init__(self, c_in=512, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,),
+    def __init__(self, c_in=512, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,), norm_g=32,
                  heads=-1, cph=32, mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=256, dropout=0):
         """
         An Image Decoder.
@@ -404,6 +410,7 @@ class Decoder(tf.keras.Model):
         :param c_out: output channels of this model's outputs.
         :param ch_list: list of channels to be used across down & up sampling.
         :param attn_res: list of resolution for which attention mechanism is to be implemented.
+        :param norm_g: number of groups for group norm.
         :param heads: number of attention heads.
         :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
         :param mid_attn: boolean value whether to use attention in bottleneck layer.
@@ -428,16 +435,16 @@ class Decoder(tf.keras.Model):
         self.mid_layers = []
         self.mid_requires_time = []
 
-        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1],
+        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1], norm_g=norm_g,
                                         t_emb=None, dropout=dropout, hw=cur_res, mask=False))
         self.mid_requires_time.append(True)
 
         if mid_attn:
             self.mid_layers.append(
-                MHAAttentionBlock(ch_list[-1], ch_list[-1] // cph if heads == -1 else heads, cur_res))
+                MHAAttentionBlock(ch_list[-1], ch_list[-1] // cph if heads == -1 else heads, cur_res, norm_g=norm_g))
             self.mid_requires_time.append(False)
 
-        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1],
+        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1], norm_g=norm_g,
                                         t_emb=None, dropout=dropout, hw=cur_res, mask=False))
         self.mid_requires_time.append(True)
 
@@ -451,12 +458,12 @@ class Decoder(tf.keras.Model):
 
             for block in range(num_res_blocks + 1):
                 ResAttnBlock = tf.keras.Sequential([])
-                ResAttnBlock.add(ResBlock(c_in=block_in, c_out=block_out,
+                ResAttnBlock.add(ResBlock(c_in=block_in, c_out=block_out, norm_g=norm_g,
                                           dropout=dropout, t_emb=None, hw=cur_res, mask=False))
                 block_in = block_out
                 if cur_res in attn_res:
                     ResAttnBlock.add(MHAAttentionBlock(
-                        c=block_in,
+                        c=block_in, norm_g=norm_g,
                         heads=block_in // cph if heads == -1 else heads,
                         hw=cur_res
                     ))
@@ -468,7 +475,7 @@ class Decoder(tf.keras.Model):
                 cur_res *= 2
 
         # end
-        self.end_norm = tf.keras.layers.GroupNormalization()
+        self.end_norm = tf.keras.layers.GroupNormalization(groups=norm_g)
         self.end_non_linear = tf.keras.layers.Activation("swish")
         self.end_conv = tf.keras.layers.Conv2D(
             kernel_size=3, padding='same', filters=self.c_out
@@ -502,7 +509,7 @@ class Decoder(tf.keras.Model):
 
 
 class UNet(tf.keras.Model):
-    def __init__(self, c_in=3, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,), heads=-1, cph=32,
+    def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), norm_g=32, attn_res=(16,), heads=-1, cph=32,
                  mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=256, dropout=0, time_steps=1000,
                  beta_start=1e-4, beta_end=0.02, num_classes=1, cfg_weight=3, mask=False, inherited=False):
         """
@@ -512,6 +519,7 @@ class UNet(tf.keras.Model):
         :param c_in: input channels of this model's inputs.
         :param c_out: output channels of this model's outputs.
         :param ch_list: list of channels to be used across down & up sampling.
+        :param norm_g: number of groups for group norm.
         :param attn_res: list of resolution for which attention mechanism is to be implemented.
         :param heads: number of attention heads.
         :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
@@ -553,13 +561,13 @@ class UNet(tf.keras.Model):
 
             for block in range(num_res_blocks):
                 ResAttnBlock = tf.keras.Sequential()
-                ResAttnBlock.add(ResBlock(c_in=block_in, c_out=block_out,
+                ResAttnBlock.add(ResBlock(c_in=block_in, c_out=block_out, norm_g=norm_g,
                                           t_emb=ch_list[0] * 4, dropout=dropout, hw=cur_res, mask=mask))
                 block_in = block_out
                 if cur_res in attn_res:
                     ResAttnBlock.add(MHAAttentionBlock(
                         heads=block_in // cph if heads == -1 else heads,
-                        c=block_in,
+                        c=block_in, norm_g=norm_g,
                         hw=cur_res
                     ))
 
@@ -576,16 +584,16 @@ class UNet(tf.keras.Model):
         self.mid_layers = []
         self.mid_requires_time = []
 
-        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1],
+        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1], norm_g=norm_g,
                                         t_emb=ch_list[0] * 4, dropout=dropout, hw=cur_res, mask=mask))
         self.mid_requires_time.append(True)
 
         if mid_attn:
             self.mid_layers.append(
-                MHAAttentionBlock(ch_list[-1], ch_list[-1] // cph if heads == -1 else heads, cur_res))
+                MHAAttentionBlock(ch_list[-1], ch_list[-1] // cph if heads == -1 else heads, cur_res, norm_g=norm_g))
             self.mid_requires_time.append(False)
 
-        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1],
+        self.mid_layers.append(ResBlock(c_in=ch_list[-1], c_out=ch_list[-1], norm_g=norm_g,
                                         t_emb=ch_list[0] * 4, dropout=dropout, hw=cur_res, mask=mask))
         self.mid_requires_time.append(True)
 
@@ -600,11 +608,12 @@ class UNet(tf.keras.Model):
             for block in range(num_res_blocks + 1):
                 ResAttnBlock = tf.keras.Sequential([])
                 ResAttnBlock.add(ResBlock(c_in=block_in + self.skip_con_channels.pop(), c_out=block_out,
-                                          dropout=dropout, t_emb=ch_list[0] * 4, hw=cur_res, mask=mask))
+                                          dropout=dropout, t_emb=ch_list[0] * 4, hw=cur_res, mask=mask,
+                                          norm_g=norm_g))
                 block_in = block_out
                 if cur_res in attn_res:
                     ResAttnBlock.add(MHAAttentionBlock(
-                        c=block_in,
+                        c=block_in, norm_g=norm_g,
                         heads=block_in // cph if heads == -1 else heads,
                         hw=cur_res
                     ))
@@ -618,7 +627,7 @@ class UNet(tf.keras.Model):
 
         # final
         self.exit_layers = tf.keras.Sequential([
-            tf.keras.layers.GroupNormalization(),
+            tf.keras.layers.GroupNormalization(groups=norm_g),
             tf.keras.layers.Activation("swish"),
             tf.keras.layers.SeparableConv2D(filters=c_out, kernel_size=3,
                                             padding='same')
@@ -714,7 +723,7 @@ class UNet(tf.keras.Model):
 
 
 class UNetGenFill(UNet):
-    def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), attn_res=(16,), heads=1, cph=32,
+    def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), attn_res=(16,), heads=1, cph=32, norm_g=32,
                  mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=64, dropout=0, time_steps=1000,
                  beta_start=1e-4, beta_end=0.02, mask_percent_range=(0.0, 0.20)):
         """
@@ -728,6 +737,7 @@ class UNetGenFill(UNet):
         :param attn_res: list of resolution for which attention mechanism is to be implemented.
         :param heads: number of attention heads.
         :param cph: channels per heads, used when 'heads' is set to -1 (adaptive no of heads).
+        :param norm_g: number of groups for group norm.
         :param mid_attn: boolean value whether to use attention in bottleneck layer.
         :param resamp_with_conv: boolean value whether to use conv layer during up and down sampling.
         :param num_res_blocks: number of resnet blocks per channel in 'ch_list'.
@@ -739,9 +749,10 @@ class UNetGenFill(UNet):
         :param mask_percent_range: percentage of masking to be done from all sides of the image as a range (min, max).
         """
         super().__init__(c_in=c_in, c_out=c_out, ch_list=ch_list, attn_res=attn_res, heads=heads, cph=cph,
-                         mid_attn=mid_attn, resamp_with_conv=resamp_with_conv, num_res_blocks=num_res_blocks,
-                         img_res=img_res, dropout=dropout, time_steps=time_steps, beta_start=beta_start,
-                         beta_end=beta_end, num_classes=1, cfg_weight=3, mask=True, inherited=True)
+                         norm_g=norm_g,  mid_attn=mid_attn, resamp_with_conv=resamp_with_conv,
+                         num_res_blocks=num_res_blocks, img_res=img_res, dropout=dropout,
+                         time_steps=time_steps, beta_start=beta_start, beta_end=beta_end,
+                         num_classes=1, cfg_weight=3, mask=True, inherited=True)
 
         self.mask_percent_range = mask_percent_range
 
