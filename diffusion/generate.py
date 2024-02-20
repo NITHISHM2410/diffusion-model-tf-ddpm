@@ -3,13 +3,30 @@ from tqdm import tqdm
 
 
 class GenerateImages:
-    def __init__(self, model, device):
+    def __init__(self, model, device, ckpt_path):
         """
         :param model: A trained diffusion model instance
         :param device: A tf.distribute.Strategy instance
         """
         self.model = model
         self.device = device
+        self.load_from_checkpoint(ckpt_path)
+
+    def load_from_checkpoint(self, ckpt_path):
+        """
+        loads weights into the model from checkpoint path.
+        :param ckpt_path: trained checkpoint path
+
+        """
+        ckpt = tf.train.Checkpoint(
+            model=self.model,
+            ema_model=self.model,
+            best_model=self.model,
+            optimizer=tf.keras.optimizers.Adam(),
+            train_counter=tf.Variable(0),
+            val_counter=tf.Variable(0),
+        )
+        ckpt.restore(ckpt_path)
 
     @tf.function
     def distribute_fn(self, images, t, cls_list):
@@ -27,6 +44,7 @@ class GenerateImages:
         """
         # Sample Gaussian noise
         images = tf.random.normal((no_of, self.model.img_res, self.model.img_res, self.model.c_in))
+        cls_list = tf.constant(cls_list)
 
         images = self.device.experimental_distribute_dataset(
             tf.data.Dataset.from_tensor_slices(images).batch(no_of, drop_remainder=True)

@@ -1,16 +1,17 @@
 import tensorflow as tf
-import numpy as np
 import matplotlib.pyplot as plt
 from diffusion_tf import UNet
 from tqdm import tqdm
 import gc
+import os
 
 
 class Trainer:
-    def __init__(self, c_in=3, c_out=3, ch_list=(128, 128, 256, 256, 512, 512), attn_res=(16,), heads=-1, cph=32,
-                 norm_g=32, num_classes=1, lr=2e-5, time_steps=1000, image_size=256, ema_iterations_start=5000,
-                 loss_type='l2', no_of=64, freq=5, sample_ema_only=True, beta_start=1e-4, beta_end=0.02,
-                 is_logging=False, device=None, train_logdir="logs/train_logs/", val_logdir="logs/val_logs/"):
+    def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), attn_res=(16,), heads=1, cph=32,
+                 norm_g=32, num_classes=1, lr=2e-5, time_steps=1000, image_size=64, ema_iterations_start=5000,
+                 loss_type='l2', no_of=64, freq=3, sample_ema_only=True, beta_start=1e-4, beta_end=0.02,
+                 is_logging=False, device=None, train_logdir="logs/train_logs/", val_logdir="logs/val_logs/",
+                 save_dir=None, checkpoint_name=None):
 
         """
 
@@ -36,28 +37,31 @@ class Trainer:
         :param is_logging: Boolean value, whether to log results.
         :param train_logdir: Directory to log train results.
         :param val_logdir: Directory to log validation results.
-
+        :param save_dir: Directory of the saved checkpoint. If no saved checkpoint available(no previous training) in
+        the mentioned path then, one will be created during model training in the mentioned path.
+        :param checkpoint_name: Name of the saved checkpoint. If no saved checkpoint available(no previous training) in
+        above-mentioned path and name, one will be created during model training.
 
         """
 
         self.image_size = image_size
-        self.time_steps = time_steps
-        self.lr = lr
         self.ema_iterations_start = ema_iterations_start
         self.no_of = no_of
         self.freq = freq
         self.sample_ema_only = sample_ema_only
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.loss_type = loss_type
 
         self.c_in = c_in
         self.c_out = c_out
         self.ch_list = ch_list
         self.attn_res = attn_res
+        self.time_steps = time_steps
         self.norm_g = norm_g
         self.num_classes = num_classes
+        self.beta_start = beta_start
+        self.beta_end = beta_end
+        self.loss_type = loss_type
         self.heads = heads
+        self.lr = lr
         self.cph = cph
 
         if not isinstance(device, tf.distribute.Strategy):
@@ -65,18 +69,12 @@ class Trainer:
         self.device = device
 
         with self.device.scope():
-            self.model = UNet(c_in=self.c_in, c_out=self.c_out, ch_list=self.ch_list, attn_res=self.attn_res,
-                              norm_g=self.norm_g, heads=self.heads, cph=self.cph, num_classes=self.num_classes,
-                              cfg_weight=3, mid_attn=True, resamp_with_conv=True, num_res_blocks=2,
-                              img_res=self.image_size, dropout=0,
-                              time_steps=self.time_steps, beta_start=self.beta_start, beta_end=self.beta_end)
+            # Initialize models
+            self.model = self.initialize_model()
+            self.ema_model = self.initialize_model()
+            self.best_model = self.initialize_model()
 
-            self.ema_model = UNet(c_in=self.c_in, c_out=self.c_out, ch_list=self.ch_list, attn_res=self.attn_res,
-                                  norm_g=self.norm_g, heads=self.heads, cph=self.cph, num_classes=self.num_classes,
-                                  cfg_weight=3, mid_attn=True, resamp_with_conv=True, num_res_blocks=2,
-                                  img_res=self.image_size, dropout=0,
-                                  time_steps=self.time_steps, beta_start=self.beta_start, beta_end=self.beta_end)
-
+            # Loss function MSE(l2) or MAE(l1)
             if loss_type == 'l2':
                 self.base_loss = tf.keras.losses.MeanSquaredError(
                     name="MSELoss",
@@ -92,27 +90,101 @@ class Trainer:
 
             self.compute_loss = self.compute_loss
 
+            # Optimizer
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
+            self.optimizer.build(self.model.trainable_weights)
             self.ema_decay = tf.constant(0.99, dtype=tf.float32)
 
+        # Train & Val step counter for tf.summary logging's.
+        self.train_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
+        self.val_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
+
+        # Checkpoints
+        self.checkpoint = None
+        self.save_manager = None
+        self.save_dir = save_dir
+        self.checkpoint_name = checkpoint_name
+        self.set_checkpoint(self.save_dir, self.checkpoint_name)
+
+        # Loss trackers
         self.loss_tracker = tf.keras.metrics.Mean()
         self.val_loss_tracker = tf.keras.metrics.Mean()
 
+        # Whether to perform logging
         self.is_logging = is_logging
         if self.is_logging:
             self.train_logging = tf.summary.create_file_writer(train_logdir)
             self.val_logging = tf.summary.create_file_writer(val_logdir)
 
+        # Initial best loss
         self.best_loss = 24.0
-        self.train_counter = 0
-        self.val_counter = 0
+
+    def set_checkpoint(self, save_dir, ckpt_name):
+        """
+        Points the checkpoint manager to a checkpoint in the specified directory.
+
+        :param save_dir: Directory of the checkpoint to be restored or save.
+        :param ckpt_name: Name of the checkpoint to be restored or save.
+
+        If no checkpoint is available in 'save_dir' named 'ckpt_name' then one will be created during training.
+        If a checkpoint is available in the above-mentioned location, then it will be tracked. No new checkpoint will be created.
+
+        """
+
+        self.save_dir = save_dir
+        self.checkpoint_name = ckpt_name
+
+        self.checkpoint = tf.train.Checkpoint(
+            model=self.model,
+            ema_model=self.ema_model,
+            best_model=self.best_model,
+            optimizer=self.optimizer,
+            train_counter=self.train_counter,
+            val_counter=self.val_counter
+        )
+        self.save_manager = tf.train.CheckpointManager(
+            checkpoint=self.checkpoint,
+            directory=save_dir,
+            checkpoint_name=ckpt_name,
+            max_to_keep=50
+        )
+
+    def initialize_model(self):
+        """
+        Initializes UNet model.
+
+        """
+        return UNet(
+            c_in=self.c_in, c_out=self.c_out, ch_list=self.ch_list, attn_res=self.attn_res,
+            norm_g=self.norm_g, heads=self.heads, cph=self.cph, num_classes=self.num_classes,
+            cfg_weight=3, mid_attn=True, resamp_with_conv=True, num_res_blocks=2,
+            img_res=self.image_size, dropout=0,
+            time_steps=self.time_steps, beta_start=self.beta_start, beta_end=self.beta_end
+        )
+
+    def resume_training(self, checkpoint_dir, checkpoint_name):
+        """
+        Resumes training from checkpoint.
+
+        :param checkpoint_dir: Directory of existing checkpoint.
+        :param checkpoint_name: Name of the existing checkpoint in 'checkpoint_dir'.
+
+        """
+        self.set_checkpoint(checkpoint_dir, checkpoint_name)
+        ckpt_name = self.checkpoint_name + '-0'
+        self.checkpoint.restore(os.path.join(self.save_dir, ckpt_name))
+        if self.is_logging:
+            print("Training logging done: ", self.train_counter.numpy())
+            print("Validations logging done: ", self.val_counter.numpy())
+        print("Optimizer iterations passed: ", self.optimizer.iterations.numpy())
 
     def compute_loss(self, y_true, y_pred):
         """
+        Computes loss b/w true & predictions based on initialized loss function.
 
         :param y_true: target data.
         :param y_pred: predicted data.
-        :return:
+
         """
         return tf.nn.compute_average_loss(
             tf.math.reduce_mean(
@@ -138,9 +210,11 @@ class Trainer:
         """
 
         def unit_step(data):
+            # Gather data
             image = data['image']
             cls = data['context']
 
+            # Conditional guidance
             if self.num_classes > 1:
                 if tf.random.uniform(minval=0, maxval=1, shape=()) < 0.1:
                     cls = tf.fill(
@@ -180,65 +254,61 @@ class Trainer:
 
             return loss
 
+        # Distribute train batches across devices
         losses = self.device.run(unit_step, args=(next(iterator),))
+
+        # Whether to increment train counter for tensorflow summary logging's
+        if self.is_logging:
+            self.train_counter.assign_add(1)
+
+        # Combine losses
         return self.device.reduce(tf.distribute.ReduceOp.SUM, losses, axis=None)
 
-    # eval step using ema_model
+    # eval step using ema_model or main_model
     @tf.function
-    def test_step(self, iterator):
+    def test_step(self, iterator, use_main, log_val_results):
         """
         A Single validation step using EMA model.
 
         :param iterator: val tf.data.Dataset iterator.
+        :param use_main: boolean, whether to use main or ema model for validation.
+        :param log_val_results: boolean value, whether to log validation results.
         """
 
         def unit_step(data):
+            # Gather data
             image = data['image']
             cls = data['context']
 
+            # Conditional guidance
             if not self.num_classes > 1:
                 cls = None
 
+            # Sample time step
             t = self.sample_time_step(size=tf.shape(image)[0])
 
+            # Forward noise
             noised_image, noise = self.ema_model.forward_diff([image, t])
             t = tf.expand_dims(t, axis=-1)
 
-            output = self.ema_model([noised_image, t, cls], training=False)
-            loss = self.compute_loss(noise, output)
+            # Forward pass Main model or EMA model
+            if use_main:
+                output = self.model([noised_image, t, cls], training=False)
+            else:
+                output = self.ema_model([noised_image, t, cls], training=False)
 
+            # Compute loss
+            loss = self.compute_loss(noise, output)
             return loss
 
+        # Distribute train batches across devices
         losses = self.device.run(unit_step, args=(next(iterator),))
-        return self.device.reduce(tf.distribute.ReduceOp.SUM, losses, axis=None)
 
-    # eval step using main_model
-    @tf.function
-    def test_step_main(self, iterator):
-        """
-        A Single validation step using main model.
+        # Whether to increment val counter for tensorflow summary logging's
+        if log_val_results:
+            self.val_counter.assign_add(1)
 
-        :param iterator: val tf.data.Dataset iterator.
-        """
-
-        def unit_step(data):
-            image = data['image']
-            cls = data['context']
-
-            if not self.num_classes > 1:
-                cls = None
-
-            t = self.sample_time_step(size=tf.shape(image)[0])
-
-            noised_image, noise = self.model.forward_diff([image, t])
-            t = tf.expand_dims(t, axis=-1)
-
-            output = self.model([noised_image, t, cls], training=False)
-            loss = self.compute_loss(noise, output)
-
-            return loss
-
-        losses = self.device.run(unit_step, args=(next(iterator),))
+        # Combine losses
         return self.device.reduce(tf.distribute.ReduceOp.SUM, losses, axis=None)
 
     @tf.function
@@ -337,7 +407,6 @@ class Trainer:
             for train_batch_no in range(train_steps):
                 # train step
                 train_loss = self.train_step(train_data)
-                self.train_counter += 1
 
                 # update metrics
                 self.loss_tracker.update_state(train_loss)
@@ -346,11 +415,11 @@ class Trainer:
 
                 # log scores
                 if self.is_logging:
-                    with self.train_logging.as_default(self.train_counter):
+                    with self.train_logging.as_default(self.train_counter.numpy()):
                         tf.summary.scalar("loss", self.loss_tracker.result())
 
             # Validation process
-            val_loss = self.evaluate(val_data, val_steps, log_data=True, use_main=False)
+            val_loss = self.evaluate(val_data, val_steps, log_val_results=True, use_main=False)
 
             # Update scores
             progbar.update(train_batch_no + 1, values=[
@@ -364,43 +433,40 @@ class Trainer:
                 if self.sample_ema_only is False:
                     self.sample(epoch, self.no_of, True)
 
-            # Saving best weights
+            # Capturing best weights
             if self.val_loss_tracker.result() < self.best_loss:
                 self.best_loss = self.val_loss_tracker.result()
-                self.ema_model.save_weights("all_weights/best_ema_weights/weights")
-                print("Best Weights saved...")
+                with self.device.scope():
+                    for w1, w2 in zip(self.ema_model.trainable_weights, self.best_model.trainable_weights):
+                        w2.assign(w1)
+                print("Best model captured....")
 
             # Saving all weights
-            self.model.save_weights("all_weights/main_model_weights/weights")
-            self.ema_model.save_weights("all_weights/ema_model_weights/weights")
-            tf.saved_model.save(self.optimizer, "all_weights/optimizer_states/states")
+            self.save_manager.save(0)
 
             # Garbage Collect
             gc.collect()
 
     # eval function using main_model or ema_model
-    def evaluate(self, val_data, val_steps, log_data=False, use_main=False):
+    def evaluate(self, val_data, val_steps, log_val_results=False, use_main=False):
         """
         Evaluation loop.
 
         :param val_data: Validation data iterator.
         :param val_steps: number of iterations for validation data.
-        :param log_data: boolean value, whether to log validation results.
+        :param log_val_results:  boolean value, whether to log validation results.
         :param use_main: boolean value, whether to use main model for generating.
         """
         self.val_loss_tracker.reset_states()
+        use_main = tf.constant(use_main)
+        log_val_results = tf.constant(log_val_results)
 
         for _ in range(val_steps):
-            if use_main:
-                val_loss = self.test_step_main(val_data)
-            else:
-                val_loss = self.test_step(val_data)
-
+            val_loss = self.test_step(val_data, use_main, log_val_results)
             self.val_loss_tracker.update_state(val_loss)
 
-            if log_data and self.is_logging:
-                self.val_counter += 1
-                with self.val_logging.as_default(self.val_counter):
+            if log_val_results and self.is_logging:
+                with self.val_logging.as_default(self.val_counter.numpy()):
                     tf.summary.scalar("val_loss", self.val_loss_tracker.result())
 
         return self.val_loss_tracker.result()

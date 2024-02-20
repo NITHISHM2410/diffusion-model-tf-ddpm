@@ -511,7 +511,7 @@ class Decoder(tf.keras.Model):
 class UNet(tf.keras.Model):
     def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), norm_g=32, attn_res=(16,), heads=-1, cph=32,
                  mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=256, dropout=0, time_steps=1000,
-                 beta_start=1e-4, beta_end=0.02, num_classes=1, cfg_weight=3, mask=False, inherited=False):
+                 beta_start=1e-4, beta_end=0.02, num_classes=1, cfg_weight=3, mask=False):
         """
         An UNet model down samples and up samples and allows skip connections across both the up and down sampling.
         Also applies Forward diffusion, Positional embedding and class conditioning.
@@ -534,7 +534,6 @@ class UNet(tf.keras.Model):
         :param num_classes: number of classes for conditional generation.
         :param cfg_weight: interpolation weight for conditional generation.
         :param mask: boolean value, whether to mask input for mask filling task.
-        :param inherited: boolean value, whether the instance is inheriting the class 'UNet'.
         """
         super(UNet, self).__init__()
         self.c_in = c_in
@@ -645,7 +644,7 @@ class UNet(tf.keras.Model):
             self.flatten = tf.keras.layers.Reshape(target_shape=())
 
         # build
-        if not inherited:
+        if not mask:
             self.build([(None, self.img_res, self.img_res, self.c_in), (None, 1), (None, 1)])
 
     def call(self, inputs, training=None, **kwargs):
@@ -725,10 +724,10 @@ class UNet(tf.keras.Model):
 class UNetGenFill(UNet):
     def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), attn_res=(16,), heads=1, cph=32, norm_g=32,
                  mid_attn=True, resamp_with_conv=True, num_res_blocks=2, img_res=64, dropout=0, time_steps=1000,
-                 beta_start=1e-4, beta_end=0.02, mask_percent_range=(0.0, 0.20)):
+                 beta_start=1e-4, beta_end=0.02, mask_percent_range=(0.0, 0.20), in_paint=True):
         """
 
-        A Mask filling model down samples and up samples & allows skip connections across both the up and down sampling.
+        Model that uses UNet for diffusion based Generative fill tasks like image inpainting, image expanding, object replacement.
         Also applies Forward diffusion, Positional embedding and class conditioning.
 
         :param c_in: input channels of this model's inputs.
@@ -747,14 +746,16 @@ class UNetGenFill(UNet):
         :param beta_start: noise variance schedule start value.
         :param beta_end: noise variance schedule end value.
         :param mask_percent_range: percentage of masking to be done from all sides of the image as a range (min, max).
+        :param in_paint: whether to perform mask for image inpaint( reconstructing any part of image ).
         """
         super().__init__(c_in=c_in, c_out=c_out, ch_list=ch_list, attn_res=attn_res, heads=heads, cph=cph,
-                         norm_g=norm_g,  mid_attn=mid_attn, resamp_with_conv=resamp_with_conv,
+                         norm_g=norm_g, mid_attn=mid_attn, resamp_with_conv=resamp_with_conv,
                          num_res_blocks=num_res_blocks, img_res=img_res, dropout=dropout,
                          time_steps=time_steps, beta_start=beta_start, beta_end=beta_end,
-                         num_classes=1, cfg_weight=3, mask=True, inherited=True)
+                         num_classes=1, cfg_weight=3, mask=True)
 
         self.mask_percent_range = mask_percent_range
+        self.in_paint = in_paint
 
         if self.mask_percent_range is not None:
             self.min_mask_percent = mask_percent_range[0]
@@ -766,9 +767,9 @@ class UNetGenFill(UNet):
         )[None, :, :, None]
 
         self.mask_embedding = tf.keras.Sequential([
-            tf.keras.layers.Conv2D(ch_list[0]*4, kernel_size=1, activation='linear'),
+            tf.keras.layers.Conv2D(ch_list[0] * 4, kernel_size=1, activation='linear'),
             tf.keras.layers.Activation("swish"),
-            tf.keras.layers.Conv2D(ch_list[0]*4, kernel_size=1, activation='linear')
+            tf.keras.layers.Conv2D(ch_list[0] * 4, kernel_size=1, activation='linear')
         ])
         self.mask_embedding.build((None, img_res, img_res, c_in))
 
@@ -776,10 +777,23 @@ class UNetGenFill(UNet):
                     (None, 1),
                     (None, self.img_res, self.img_res, self.c_in)])
 
+    def random_box(self):
+        mh = tf.random.uniform(minval=0, maxval=self.img_res, shape=(), dtype=tf.int32)
+        mhx = tf.random.uniform(minval=mh, maxval=self.img_res, shape=(), dtype=tf.int32)
+
+        mw = tf.random.uniform(minval=0, maxval=self.img_res, shape=(), dtype=tf.int32)
+        mwx = tf.random.uniform(minval=mw, maxval=self.img_res, shape=(), dtype=tf.int32)
+        return mh, mw, mhx, mwx
+
     @tf.function
-    def mask_out(self, x):
-        m = tf.random.uniform(minval=self.min_mask_percent, maxval=self.max_mask_percent,
-                              shape=(4,), dtype=tf.float32)
+    def mask_out(self, x, custom_mask_percents=None, custom_mask_boxes=None):
+        if len(x.shape) == 3:
+            x = x[None, :, :, :]
+        if custom_mask_percents is None:
+            m = tf.random.uniform(minval=self.min_mask_percent, maxval=self.max_mask_percent,
+                                  shape=(4,), dtype=tf.float32)
+        else:
+            m = custom_mask_percents
         m = tf.cast(self.img_res * m, tf.int32)
         x = tf.cast(
             tf.logical_not(
@@ -792,6 +806,21 @@ class UNetGenFill(UNet):
                         tf.transpose(self.img_ind) >= (self.img_res - m[3]))
                 )
             ), tf.float32) * x
+
+        if self.in_paint:
+            if custom_mask_boxes is None:
+                mh, mw, mhx, mwx = self.random_box()
+            else:
+                mh, mw, mhx, mwx = tf.split(custom_mask_boxes, 4, 0)
+            m = tf.logical_and(
+                tf.logical_and(self.img_ind >= (mw - 0), self.img_ind <= (mwx - 0)),
+                tf.logical_and(tf.transpose(self.img_ind) >= (mh - 0), tf.transpose(self.img_ind) <= (mhx - 0))
+            )
+
+            m = tf.logical_not(m)
+            m = tf.cast(m, tf.float32)
+            x = m * x
+
         return x
 
     def call(self, inputs, training=None, **kwargs):
