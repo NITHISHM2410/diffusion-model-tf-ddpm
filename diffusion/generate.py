@@ -44,7 +44,7 @@ class GenerateImages:
         """
         # Sample Gaussian noise
         images = tf.random.normal((no_of, self.model.img_res, self.model.img_res, self.model.c_in))
-        cls_list = tf.constant(cls_list)
+        cls_list = tf.constant(cls_list) if cls_list is not None else None
 
         images = self.device.experimental_distribute_dataset(
             tf.data.Dataset.from_tensor_slices(images).batch(no_of, drop_remainder=True)

@@ -10,7 +10,8 @@ class Trainer:
     def __init__(self, c_in=3, c_out=3, ch_list=(128, 256, 256, 256), attn_res=(16,), heads=1, cph=32,
                  norm_g=32, num_classes=1, lr=2e-5, time_steps=1000, image_size=64, ema_iterations_start=5000,
                  loss_type='l2', no_of=64, freq=3, sample_ema_only=True, beta_start=1e-4, beta_end=0.02,
-                 is_logging=False, device=None, train_logdir="logs/train_logs/", val_logdir="logs/val_logs/",
+                 is_logging=False, is_img_logging=True, device=None,
+                 train_logdir="logs/train_logs/", val_logdir="logs/val_logs/", img_logdir="logs/img_logs/",
                  save_dir=None, checkpoint_name=None):
 
         """
@@ -35,8 +36,10 @@ class Trainer:
         :param beta_end: Ending Beta for ForwardDiffusion.
         :param device: A tf.distribute.Strategy instance.
         :param is_logging: Boolean value, whether to log results.
+        :param is_img_logging: Boolean value, whether to log generated images.
         :param train_logdir: Directory to log train results.
         :param val_logdir: Directory to log validation results.
+        :param img_logdir: Directory to log generated images.
         :param save_dir: Directory of the saved checkpoint. If no saved checkpoint available(no previous training) in
         the mentioned path then, one will be created during model training in the mentioned path.
         :param checkpoint_name: Name of the saved checkpoint. If no saved checkpoint available(no previous training) in
@@ -98,6 +101,7 @@ class Trainer:
         # Train & Val step counter for tf.summary logging's.
         self.train_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
         self.val_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
+        self.img_log_counter = tf.Variable(0, trainable=False, dtype=tf.int32)
 
         # Checkpoints
         self.checkpoint = None
@@ -112,9 +116,14 @@ class Trainer:
 
         # Whether to perform logging
         self.is_logging = is_logging
+        self.is_img_logging = is_img_logging
+
         if self.is_logging:
             self.train_logging = tf.summary.create_file_writer(train_logdir)
             self.val_logging = tf.summary.create_file_writer(val_logdir)
+
+        if self.is_img_logging:
+            self.img_logging = tf.summary.create_file_writer(img_logdir)
 
         # Initial best loss
         self.best_loss = 24.0
@@ -140,7 +149,8 @@ class Trainer:
             best_model=self.best_model,
             optimizer=self.optimizer,
             train_counter=self.train_counter,
-            val_counter=self.val_counter
+            val_counter=self.val_counter,
+            img_counter=self.img_log_counter
         )
         self.save_manager = tf.train.CheckpointManager(
             checkpoint=self.checkpoint,
@@ -162,7 +172,7 @@ class Trainer:
             time_steps=self.time_steps, beta_start=self.beta_start, beta_end=self.beta_end
         )
 
-    def resume_training(self, checkpoint_dir, checkpoint_name):
+    def restore_checkpoint(self, checkpoint_dir, checkpoint_name):
         """
         Resumes training from checkpoint.
 
@@ -257,22 +267,17 @@ class Trainer:
         # Distribute train batches across devices
         losses = self.device.run(unit_step, args=(next(iterator),))
 
-        # Whether to increment train counter for tensorflow summary logging's
-        if self.is_logging:
-            self.train_counter.assign_add(1)
-
         # Combine losses
         return self.device.reduce(tf.distribute.ReduceOp.SUM, losses, axis=None)
 
     # eval step using ema_model or main_model
     @tf.function
-    def test_step(self, iterator, use_main, log_val_results):
+    def test_step(self, iterator, use_main):
         """
         A Single validation step using EMA model.
 
         :param iterator: val tf.data.Dataset iterator.
         :param use_main: boolean, whether to use main or ema model for validation.
-        :param log_val_results: boolean value, whether to log validation results.
         """
 
         def unit_step(data):
@@ -304,10 +309,6 @@ class Trainer:
         # Distribute train batches across devices
         losses = self.device.run(unit_step, args=(next(iterator),))
 
-        # Whether to increment val counter for tensorflow summary logging's
-        if log_val_results:
-            self.val_counter.assign_add(1)
-
         # Combine losses
         return self.device.reduce(tf.distribute.ReduceOp.SUM, losses, axis=None)
 
@@ -327,13 +328,15 @@ class Trainer:
             images = self.device.run(self.ema_model.diffuse_step, args=(images, time, cls))
         return images
 
-    def sample(self, epoch, no_of, use_main=False):
+    def sample(self, epoch, no_of, log_name, use_main=False):
         """
         Generates plots of generated images.
 
         :param epoch: epoch number to name the output file (Any string or int).
         :param no_of: number of images to generate.
         :param use_main: boolean value, whether to use main model for generating.
+        :param log_name: name for image logs in tensorboard. If set to None(generally during training),'img_log_counter'
+         will be incremented and used for naming the image logs.
         """
         # Sample Gaussian noise
         images = tf.random.normal((no_of, self.image_size, self.image_size, self.c_in))
@@ -361,8 +364,21 @@ class Trainer:
         # Set pixel values in display range
         images = tf.clip_by_value(images, 0, 1)
 
+        # Log results in Tensorboard
+        if self.is_img_logging:
+            if log_name is None:
+                name = "log.no {0}".format(str(self.img_log_counter.numpy()))
+            else:
+                name = "log.no {0}".format(str(log_name))
+
+            with self.img_logging.as_default():
+                tf.summary.image(name=name, data=images, max_outputs=no_of, step=0)
+
+            if log_name is None:
+                self.img_log_counter.assign_add(self.freq)
+
         # Creating and saving sampled images plot
-        images = iter(images)
+        gen_images = iter(images)
 
         h = int(no_of ** 0.5)
         fig, ax = plt.subplots(h, h, figsize=(7, 7), gridspec_kw={
@@ -371,7 +387,7 @@ class Trainer:
         })
         for i in range(h):
             for j in range(h):
-                ax[i][j].imshow(next(images))
+                ax[i][j].imshow(next(gen_images))
                 ax[i][j].axis('off')
 
         if use_main:
@@ -381,6 +397,7 @@ class Trainer:
 
         fig.savefig(dir, pad_inches=0.03, bbox_inches='tight')
         plt.close(fig)
+        return images
 
     def train(self, epochs, train_ds, val_ds, train_steps, val_steps):
         """
@@ -417,6 +434,7 @@ class Trainer:
                 if self.is_logging:
                     with self.train_logging.as_default(self.train_counter.numpy()):
                         tf.summary.scalar("loss", self.loss_tracker.result())
+                    self.train_counter.assign_add(1)
 
             # Validation process
             val_loss = self.evaluate(val_data, val_steps, log_val_results=True, use_main=False)
@@ -429,9 +447,9 @@ class Trainer:
 
             # Sampling images
             if epoch % self.freq == 0:
-                self.sample(epoch, self.no_of, False)
+                self.sample(epoch, self.no_of, use_main=False, log_name=None)
                 if self.sample_ema_only is False:
-                    self.sample(epoch, self.no_of, True)
+                    self.sample(epoch, self.no_of, use_main=True, log_name=None)
 
             # Capturing best weights
             if self.val_loss_tracker.result() < self.best_loss:
@@ -462,11 +480,12 @@ class Trainer:
         log_val_results = tf.constant(log_val_results)
 
         for _ in range(val_steps):
-            val_loss = self.test_step(val_data, use_main, log_val_results)
+            val_loss = self.test_step(val_data, use_main)
             self.val_loss_tracker.update_state(val_loss)
 
             if log_val_results and self.is_logging:
                 with self.val_logging.as_default(self.val_counter.numpy()):
                     tf.summary.scalar("val_loss", self.val_loss_tracker.result())
+                self.val_counter.assign_add(1)
 
         return self.val_loss_tracker.result()
